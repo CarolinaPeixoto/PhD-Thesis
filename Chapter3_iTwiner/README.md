@@ -10,7 +10,7 @@ Submitted to BMC Bioinformatics (15 March 2022). Under Review.
 
 -Identification of genes correlated with metastasis development using supervised learning with network informa-tion
 
--iTwiner, based on correlation matrices, lead to the best model performance selecting the most stable and robustgene sets
+-iTwiner, based on correlation matrices, lead to the best model performance selecting the most stable and robust gene sets
 
 -Classifiers based on the genes pre-selected by regularized logistic regression shown better performance thanthose that use DEGs
 
