@@ -1,6 +1,6 @@
 # TCox: Correlation-Based Regularization Applied to Colorectal Cancer Survival Data
 
-Published in: Peixoto, C., Lopes, M. B., Martins, M., Costa, L., \& Vinga, S. (2020). TCox: Correlation-Based Regularization Applied to Colorectal Cancer Survival Data. Biomedicines, 8(11), 488. \\ DOI:~10.3390/biomedicines8110488
+Peixoto, C., Lopes, M. B., Martins, M., Costa, L., \& Vinga, S. (2020). TCox: Correlation-Based Regularization Applied to Colorectal Cancer Survival Data. Biomedicines, 8(11), 488. DOI: 10.3390/biomedicines8110488
 
 ## Abstract
 
