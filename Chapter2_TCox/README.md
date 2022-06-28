@@ -1,0 +1,10 @@
+# TCox: Correlation-Based Regularization Applied to Colorectal Cancer Survival Data
+
+Published in: Peixoto, C., Lopes, M. B., Martins, M., Costa, L., \& Vinga, S. (2020). TCox: Correlation-Based Regularization Applied to Colorectal Cancer Survival Data. Biomedicines, 8(11), 488. \\ DOI:~10.3390/biomedicines8110488
+
+## Abstract
+
+Colorectal cancer (CRC) is one of the leading causes of mortality and morbidity in the world. Being a heterogeneous disease, cancer therapy and prognosis represent a significant challenge to medical care. The molecular information improves the accuracy with which patients are classified and treated since similar pathologies may show different clinical outcomes and other responses to treatment. However, the high dimensionality of gene expression data makes the selection of novel genes a problematic task.
+We propose TCox, a novel penalization function for Cox models, which~promotes the selection of genes that have distinct correlation patterns in normal vs. tumor tissues. We compare TCox to other regularized survival models, Elastic Net, HubCox, and OrphanCox. Gene expression and clinical data of CRC and normal (TCGA) patients are used for model evaluation. Each model is tested 100 times. Within a specific run, eighteen of the features selected by TCox are also selected by the other survival regression models tested, therefore undoubtedly being crucial players in the survival of colorectal cancer patients. 
+Moreover, the TCox model exclusively selects genes able to categorize patients into significant risk groups.
+Our work demonstrates the ability of the proposed weighted regularizer TCox to disclose novel molecular drivers in CRC survival by accounting for correlation-based network information from both tumor and normal tissue. The results presented support the relevance of network information for biomarker identification in high-dimensional gene expression data and foster new directions for the development of network-based feature selection methods in precision oncology.
