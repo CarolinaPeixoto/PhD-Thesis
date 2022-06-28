@@ -1,0 +1,2209 @@
+---
+title: "ccRCC_TGA"
+author: "Peixoto_2022"
+date: "09/06/2022"
+output:
+  html_document: 
+    number_sections: yes
+    toc: yes
+params:
+  seed: !r 2150
+  train: !r 0.7
+  nfolds: !r 10
+editor_options:
+  chunk_output_type: console
+---
+
+# Install packages and functions
+
+## Required libraries
+```{r message = FALSE}
+library(SummarizedExperiment)
+library(dplyr)
+library(DT)
+library(tidyverse)
+library(futile.logger)
+library(loose.rock)
+library(survival)
+library(GGally)
+library(ggplot2)
+library(survminer)
+library(glmnet)
+library(glmSparseNet)
+library(gplots)
+library(readr)
+#library(maftools)
+library(RTCGAToolbox)
+library(edgeR)
+library(funModeling) 
+library(Hmisc)
+library(readxl)
+library(writexl)
+library(DOSE)
+#install.packages("biospear")
+#library(biospear)
+```
+
+# Download and prepare dataframes from TCGA - RTCGAtoolbox package
+## Renal cell carcinoma samples RNASeq data
+
+Download ccRCC dataset
+
+```{r,warning=FALSE,message=FALSE}
+rccData <- getFirehoseData(dataset="KIRC", runDate="20160128",
+    #forceDownload=TRUE,
+    #RNASeq2Gene=TRUE,
+    clinical=TRUE, RNASeq2GeneNorm = TRUE)
+
+rnaseq <- rccData@RNASeq2GeneNorm
+rnaseq <- rnaseq[[1]]
+rnaseq <- rnaseq@DataMatrix
+rnaseq <- t(rnaseq)
+dim(rnaseq)
+rnaseq[1:3,1:3]
+```
+
+
+```{r,warning=FALSE,message=FALSE}
+rnaseq <- as.data.frame(rnaseq)
+rnaseq$names <- rownames(rnaseq)
+dim(rnaseq) #606
+
+#keep only tumor samples
+tumor <- rnaseq %>%
+  filter(str_detect(names, "01A"))
+dim(tumor) #529
+tumor$names <- str_sub(tumor$names, 1, str_length(tumor$names)-16) #put names in the right format
+#remove duplicated rows
+tumor <- tumor[!duplicated(tumor$names), ]
+rownames(tumor) <- tumor$names
+tumor <- tumor[,-20502]
+
+normal <- rnaseq %>%
+  filter(!str_detect(names, "01A"))
+dim(normal) # 77
+normal$names <- str_sub(normal$names, 1, str_length(normal$names)-16) #put names in the right format
+normal <- normal[!duplicated(normal$names), ]
+rownames(normal) <- normal$names
+normal <- normal[,-20502]
+
+```
+
+## Clinical data
+
+```{r,warning=FALSE,message=FALSE}
+clinic <- rccData@clinical
+clinic <- clinic[,c(2:5,7:11,19)]
+clinic.datasurv <- clinic[,2:4]
+clinic.datasurv$days_to_death[is.na(clinic.datasurv$days_to_death)] <- 0
+
+for (i in 1:nrow(clinic.datasurv)){
+
+  if (clinic.datasurv$days_to_death[i] != 0){
+
+    clinic.datasurv$days_to_last_followup[i] <- 0
+
+  }}
+
+datasurv <- apply(as.matrix(clinic.datasurv),2,as.numeric)
+datasurv <- as.data.frame(datasurv)
+datasurv$time <- datasurv$days_to_death + datasurv$days_to_last_followup
+
+datasurv <- datasurv[,-c(2,3)]
+rownames(datasurv) <- rownames(clinic.datasurv)
+datasurv <- datasurv[datasurv$time > 0, ]
+datasurv <- na.omit(datasurv)
+colnames(datasurv) <- c("status","time")
+
+datasurv$names <- rownames(datasurv)
+datasurv$names <- toupper(datasurv$names)
+datasurv$names <- chartr('.', '-', datasurv$names)
+
+rownames(datasurv) <- datasurv$names
+datasurv <- datasurv[,-3]
+
+
+clinic$names <- rownames(clinic)
+clinic$names <- toupper(clinic$names)
+clinic$names <- chartr('.', '-', clinic$names)
+
+rownames(clinic) <- clinic$names
+clinic <- clinic[,-11]
+
+colnames(clinic) <- c("age","status_1","days_to_death","days_to_last_followup","stage","t_stage","n_stage","m_stage","gender","race")
+
+
+```
+
+# Data Analysis
+## Exploratory analysis
+
+```{r}
+clinic <- as.data.frame(clinic)
+sapply(clinic, class)
+
+clinic[,c(1,3,4)] <- sapply(clinic[, c(1,3,4)], as.numeric)
+
+basic_eda <- function(clinic)
+{
+  glimpse(clinic)
+  #df_status(clinic)
+  freq(clinic) 
+  #profiling_num(clinic)
+  plot_num(clinic)
+  describe(clinic)
+}
+basic_eda(clinic)
+
+a <- na.omit(clinic$age)
+mean(a)
+``` 
+
+
+
+
+## Survival analysis
+### All together
+```{r}
+data <- merge(datasurv, clinic, by="row.names")
+
+mod.all <- coxph(Surv(time,status)~stage+t_stage+n_stage+m_stage+gender+race, data=data)
+mod.all
+summary(mod.all)
+```
+
+
+
+### Stage
+
+```{r}
+clinic_new <- clinic[,-c(2:4)]
+data <- merge(datasurv, clinic_new, by="row.names")
+
+fit <- survfit(Surv(time, status) ~ stage, data = data)
+print(fit)
+
+# Summary of survival curves
+summary(fit)
+# Access to the sort summary table
+summary(fit)$table
+
+
+ggsurvplot(fit, data = data, pval = TRUE)
+
+
+# the log/rank test
+surv.stage <- survdiff(Surv(time,status) ~ stage, data = data)
+surv.stage
+
+```
+
+
+### M_stage
+
+```{r}
+fit <- survfit(Surv(time, status) ~ m_stage, data = data)
+print(fit)
+
+# Summary of survival curves
+summary(fit)
+# Access to the sort summary table
+summary(fit)$table
+
+
+ggsurvplot(fit, data = data, pval = TRUE)
+
+
+# the log/rank test
+surv.stage <- survdiff(Surv(time,status) ~ m_stage, data = data)
+surv.stage
+
+```
+
+### Gender
+
+```{r}
+fit <- survfit(Surv(time, status) ~ gender, data = data)
+print(fit)
+
+# Summary of survival curves
+summary(fit)
+# Access to the sort summary table
+summary(fit)$table
+
+
+ggsurvplot(fit, data = data, pval = TRUE)
+
+
+# the log/rank test
+surv.stage <- survdiff(Surv(time,status) ~ gender, data = data)
+surv.stage
+
+```
+
+### race
+
+```{r}
+fit <- survfit(Surv(time, status) ~ race, data = data)
+print(fit)
+
+# Summary of survival curves
+summary(fit)
+# Access to the sort summary table
+summary(fit)$table
+
+
+ggsurvplot(fit, data = data, pval = TRUE)
+
+
+# the log/rank test
+surv.stage <- survdiff(Surv(time,status) ~ race, data = data)
+surv.stage
+
+```
+
+
+## DEGs
+
+### Tumoral vs. Normal
+```{r, warning=FALSE}
+tumor$class <- "t"
+normal$class <- "n"
+
+xdata <- rbind(tumor,normal)
+
+group <- as.factor(xdata$class)
+class <- as.data.frame(xdata$class)
+
+# keep features with standard deviation > 0
+xdata <- xdata[,-20502]
+xdata <- xdata[,sapply(seq(ncol(xdata)), function(ix) {sd(xdata[,ix])}) != 0]
+xdata <- t(xdata)
+
+```
+
+```{r}
+edgeR.DGElist <- DGEList(counts=xdata, group = group)
+
+# remove genes that do not have one count per million in at least 5 samples
+keep <- rowSums(cpm(edgeR.DGElist) >= 1) >= 5
+edgeR.DGElist <- edgeR.DGElist[keep ,]
+
+# specify the design setup 
+
+design <- model.matrix(~group)
+
+# estimate the dispersion for all read counts across all samples
+edgeR.DGElist <- estimateDisp(edgeR.DGElist, design)
+
+# Perform quasi-likelihood f test
+# fit the negative binomial model
+edger_fit <- glmQLFit(edgeR.DGElist, design )
+plotQLDisp(edger_fit)
+# perform the testing for every gene using the neg. binomial model
+edger_qlf <- glmQLFTest(edger_fit,coef=2)
+summary(decideTests(edger_qlf))
+
+plotMD(edger_qlf)
+abline(h=c(-1,1), col="blue")
+
+# extract results from edger _lrt$ table plus adjusted p- values
+DGE.results_edgeR <- topTags(edger_qlf, n = Inf , sort.by = "PValue" , adjust.method = "BH" )
+
+topTags(DGE.results_edgeR) #table with the top10 DEGs
+
+genes_deg <- DGE.results_edgeR$table
+genes_deg <- genes_deg[which(genes_deg$FDR < 0.05),]
+dim(genes_deg)#genes found to be differentially expressed
+genes_deg$row <- row.names(genes_deg)
+write_xlsx(genes_deg,"genes_deg_tvsn.xlsx")
+
+top100_deg <- rownames(genes_deg[1:100,])
+# highly expressed genes
+high <- genes_deg[genes_deg$logFC > 0,]
+dim(high)
+top100_high <- rownames(high[1:100,])
+
+#low expressed genes
+low <- genes_deg[genes_deg$logFC < 0,]
+dim(low)
+top100_low <- rownames(low[1:100,])
+
+
+```
+
+### early vs. advanced stage
+```{r, warning=FALSE}
+xdata <- merge(tumor,clinic,by="row.names")
+
+class <- as.data.frame(xdata$stage)
+class$`xdata$stage`[class$`xdata$stage`  == "stage iii"] <- "early"
+class$`xdata$stage`[class$`xdata$stage`  == "stage ii"] <- "early"
+class$`xdata$stage`[class$`xdata$stage`  == "stage i"] <- "early"
+class$`xdata$stage`[class$`xdata$stage`  == "stage iv"] <- "advanced"
+which(is.na(class$`xdata$stage`))
+class <- as.data.frame(class[-c(304,525),])
+
+group <- as.factor(class$`class[-c(304, 525), ]`)
+
+# keep features with standard deviation > 0
+xdata <- xdata[,-c(1, 20503:20513)]
+xdata <- xdata[,sapply(seq(ncol(xdata)), function(ix) {sd(xdata[,ix])}) != 0]
+xdata <- xdata[-c(304,525),]
+xdata <- t(xdata)
+```
+
+```{r}
+edgeR.DGElist <- DGEList(counts=xdata, group = group)
+
+# remove genes that do not have one count per million in at least 5 samples
+keep <- rowSums(cpm(edgeR.DGElist) >= 1) >= 5
+edgeR.DGElist <- edgeR.DGElist[keep ,]
+
+# specify the design setup 
+
+design <- model.matrix(~group)
+
+# estimate the dispersion for all read counts across all samples
+edgeR.DGElist <- estimateDisp(edgeR.DGElist, design)
+
+# fit the negative binomial model
+edger_fit <- glmQLFit(edgeR.DGElist, design )
+plotQLDisp(edger_fit)
+
+# perform the testing for every gene using the neg. binomial model
+edger_lrt <- glmQLFTest(edger_fit)
+summary(decideTests(edger_lrt))
+
+plotMD(edger_qlf)
+abline(h=c(-1,1), col="blue")
+
+# extract results from edger _lrt$ table plus adjusted p- values
+DGE.results_edgeR <- topTags(edger_lrt, n = Inf , sort.by = "PValue" , adjust.method = "BH" )
+
+topTags(DGE.results_edgeR) #table with the top10 DEGs
+
+genes_deg_ea <- DGE.results_edgeR$table
+genes_deg_ea <- genes_deg_ea[which(genes_deg_ea$FDR < 0.05),]
+dim(genes_deg_ea)#genes found to be differentially expressed
+genes_deg_ea$row <- row.names(genes_deg_ea)
+write_xlsx(genes_deg_ea,"genes_deg_earl_vs_adva.xlsx")
+
+top100_deg_ea <- rownames(genes_deg_ea[1:100,])
+# highly expressed genes
+high <- genes_deg_ea[genes_deg_ea$logFC > 0,]
+dim(high)
+top100_high_ea <- rownames(high[1:100,])
+
+#low expressed genes
+low <- genes_deg_ea[genes_deg_ea$logFC < 0,]
+dim(low)
+top100_low_ea <- rownames(low[1:100,])
+```
+
+
+
+
+
+# TCox weights 
+## t vs. n
+
+- removing variables with sd=0
+
+```{r message = FALSE}
+t <- tumor[,-20502]
+n <- normal[,-20502]
+xt_sd <- t[,sapply(seq(ncol(t)), function(ix) {sd(t[,ix])}) != 0] # 328 20025
+xn_sd <- n[,sapply(seq(ncol(n)), function(ix) {sd(n[,ix])}) != 0] #345 48710
+
+xt_less <- xt_sd[,which(colnames(xt_sd) %in% colnames(xn_sd))]
+xn_less <- xn_sd[,which(colnames(xn_sd) %in% colnames(xt_sd))]
+
+# normalizing data
+xt_norm <- scale(log2(xt_less+1)) 
+xn_norm <- scale(log2(xn_less+1)) 
+```
+
+- weight vector that penalizes genes with smaller distances between m1 and m0 correlation matrices
+
+```{r message = FALSE}
+## correlation matrices
+
+library("propagate")
+library("lsa")
+
+options(fftempdir = "~/")
+
+xt_cor <- bigcor(xt_norm, y = NULL, fun = "cor", size = 2000, verbose=FALSE)
+xt_cor <- as.data.frame(as.ffdf(xt_cor))
+
+xn_cor <- bigcor(xn_norm, y = NULL, fun = "cor", size = 2000, verbose=FALSE)
+xn_cor <- as.data.frame(as.ffdf(xn_cor))
+
+# angular distance
+ang_weight <- vector()
+
+for (i in 1:dim(xt_norm)[2]){
+  ang_weight[i] <- acos(cosine(xt_cor[,i],xn_cor[,i]))/pi
+}
+
+```
+
+```{r,warning=FALSE,message=FALSE}
+##normalized weights (between 0 and 1)
+
+tumornormal_weights <- ang_weight / max(ang_weight)
+hist(ang_weight)
+hist(tumornormal_weights,main="normal weight")
+
+#1/w
+tumornormal_weights1 <- 1 / tumornormal_weights
+hist(tumornormal_weights1,main="1 / normal weight")
+
+rm(xt_cor,xn_cor)
+```
+
+
+# Survival models
+
+
+```{r,warning=FALSE,message=FALSE}
+xdata.raw <- as.data.frame(xt_less) #529 19819
+
+ydata.raw <- as.data.frame(datasurv)
+ydata <- ydata.raw[rownames(ydata.raw) %in% 
+                              rownames(xdata.raw),]
+
+  
+xdata.raw <- xdata.raw[rownames(xdata.raw) %in% 
+                         rownames(ydata),]
+xdata <- xdata.raw %>% 
+  { (apply(., 2, sd) != 0) } %>% 
+  { xdata.raw[, .] } %>% 
+  scale
+
+xdata <- xdata[rownames(ydata),]
+
+xdata <- as.matrix(xdata) #527 19819
+```
+
+
+## EN 
+
+100 runs
+
+```{r}
+times_boot <- 100
+
+en_pvalue_curves <- matrix(0,times_boot,8)
+colnames(en_pvalue_curves) <- c("en3","run","en2","run","en1","run","en05","run")
+
+genes_en3 <- vector("list")
+genes_en2 <- vector("list")
+genes_en1 <- vector("list")
+genes_en05 <- vector("list")
+
+en_n_selected <- matrix(0,times_boot,8)
+colnames(en_n_selected) <- c("n_en3","run","n_en2","run","n_en1","run","n_en05","run")
+
+run = 2000
+i=1
+lp <- 1
+
+
+
+while (i < 101){
+  
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  ############
+  ## EN 0.3 ##
+  set.seed(123)
+  # Find the best lambda using cross-validation on train data
+  cv.fit_elastic_net3<-cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                                 family = 'cox',foldid = my_foldid, 
+                                 alpha = 0.3,
+                                 nlambda = 100,
+                                 nfolds= params$nfolds)
+  
+  
+  # Fit the final model on all data
+  
+  fit_elastic_net3<-glmnet(as.matrix(xdata),as.matrix(ydata), 
+                                 family = 'cox', 
+                                 alpha = 0.3,
+                                 lambda = cv.fit_elastic_net3$lambda.min)
+  
+  
+  coefs.v_elastic3 <- coef(fit_elastic_net3, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  if (length(coefs.v_elastic3) > 0) {
+    
+    en_n_selected[i,1] <- length(coefs.v_elastic3)
+    en_n_selected[i,2] <- run
+    genes_en3[[i]] <- names(coefs.v_elastic3)
+    
+    
+    en03<-separate2GroupsCox(as.vector(coefs.v_elastic3), 
+                                   xdata[, names(coefs.v_elastic3)], 
+                                   ydata, 
+                                   plot.title = 'Elastic Net, alpha=0.3', legend.outside = FALSE)
+    en_pvalue_curves[i,1] <- en03$pvalue
+    en_pvalue_curves[i,2] <- run
+    
+    run = run + 11
+    i = i + 1
+    lp =lp + 1
+    
+    
+    
+  }  else {
+    
+    run = run + 11
+    lp =lp + 1
+  }
+  
+}
+
+run = 2000
+lp = 1
+i=1
+
+while (i < 101){
+  
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+  
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  ############
+  ## EN 0.2 ##
+  set.seed(123)
+  # Find the best lambda using cross-validation on train data
+  cv.fit_elastic_net2<-cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                                 family = 'cox',foldid = my_foldid, 
+                                 alpha = 0.2,
+                                 nlambda = 100,
+                                 nfolds= params$nfolds)
+  
+  
+  # Fit the final model on all data
+  
+  fit_elastic_net2<-glmnet(as.matrix(xdata),as.matrix(ydata), 
+                           family = 'cox', 
+                           alpha = 0.2,
+                           lambda = cv.fit_elastic_net2$lambda.min,)
+  
+  
+  coefs.v_elastic2 <- coef(fit_elastic_net2, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  if (length(coefs.v_elastic2) > 0) {
+    
+    en_n_selected[i,3] <- length(coefs.v_elastic2)
+    en_n_selected[i,4] <- run
+    genes_en2[[i]] <- names(coefs.v_elastic2)
+    
+    
+    en02<-separate2GroupsCox(as.vector(coefs.v_elastic2), 
+                             xdata[, names(coefs.v_elastic2)], 
+                             ydata, 
+                             plot.title = 'Elastic Net, alpha=0.2', legend.outside = FALSE)
+    en_pvalue_curves[i,3] <- en02$pvalue
+    en_pvalue_curves[i,4] <- run
+    
+    run = run + 11
+    i = i + 1
+    lp =lp + 1
+    
+    
+    
+  }  else {
+    
+    run = run + 11
+    lp =lp + 1
+  }
+  
+}
+
+run = 2000
+i=1
+lp = 1
+
+while (i < 101){
+  
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+  
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  ############
+  ## EN 0.1 ##
+  set.seed(123)
+  # Find the best lambda using cross-validation on train data
+  cv.fit_elastic_net1<-cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                                 family = 'cox',foldid = my_foldid, 
+                                 alpha = 0.1,
+                                 nlambda = 100,
+                                 nfolds= params$nfolds)
+  
+  
+  # Fit the final model on all data
+  
+  fit_elastic_net1<-glmnet(as.matrix(xdata),as.matrix(ydata), 
+                           family = 'cox', 
+                           alpha = 0.1,
+                           lambda = cv.fit_elastic_net1$lambda.min,)
+  
+  
+  coefs.v_elastic1 <- coef(fit_elastic_net1, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  if (length(coefs.v_elastic1) > 0) {
+    
+    en_n_selected[i,5] <- length(coefs.v_elastic1)
+    en_n_selected[i,6] <- run
+    genes_en1[[i]] <- names(coefs.v_elastic1)
+    
+    
+    en01<-separate2GroupsCox(as.vector(coefs.v_elastic1), 
+                             xdata[, names(coefs.v_elastic1)], 
+                             ydata, 
+                             plot.title = 'Elastic Net, alpha=0.1', legend.outside = FALSE)
+    en_pvalue_curves[i,5] <- en01$pvalue
+    en_pvalue_curves[i,6] <- run
+    
+    run = run + 11
+    i = i + 1
+    lp =lp + 1
+    
+    
+    
+  }  else {
+    
+    run = run + 11
+    lp =lp + 1
+  }
+  
+}
+
+run = 2000
+i=1
+lp = 1
+
+while (i < 101){
+  
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+  
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  ############
+  ## EN 0.05 ##
+  set.seed(123)
+  # Find the best lambda using cross-validation on train data
+  cv.fit_elastic_net05<-cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                                 family = 'cox',foldid = my_foldid, 
+                                 alpha = 0.05,
+                                 nlambda = 100,
+                                 nfolds= params$nfolds)
+  
+  
+  # Fit the final model on all data
+  
+  fit_elastic_net05<-glmnet(as.matrix(xdata),as.matrix(ydata), 
+                           family = 'cox', 
+                           alpha = 0.05,
+                           lambda = cv.fit_elastic_net05$lambda.min)
+  
+  
+  coefs.v_elastic05 <- coef(fit_elastic_net05, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  if (length(coefs.v_elastic05) > 0) {
+    
+    en_n_selected[i,7] <- length(coefs.v_elastic05)
+    en_n_selected[i,8] <- run
+    genes_en05[[i]] <- names(coefs.v_elastic05)
+    
+    
+    en05<-separate2GroupsCox(as.vector(coefs.v_elastic05), 
+                             xdata[, names(coefs.v_elastic05)], 
+                             ydata, 
+                             plot.title = 'Elastic Net, alpha=0.05', legend.outside = FALSE)
+    en_pvalue_curves[i,7] <- en05$pvalue
+    en_pvalue_curves[i,8] <- run
+    
+    run = run + 11
+    i = i + 1
+    lp =lp + 1
+    
+    
+    
+  }  else {
+    
+    run = run + 11
+    lp =lp + 1
+  }
+  
+}
+
+```
+
+
+### Analysis
+
+runs & pvalues
+
+```{r}
+en_03 <- en_pvalue_curves[en_pvalue_curves[,1] < 0.05, 1]
+mean(en_03)
+en_02 <- en_pvalue_curves[en_pvalue_curves[,3] < 0.05, 3]
+mean(en_02)
+en_01 <- en_pvalue_curves[en_pvalue_curves[,5] < 0.05, 5]
+mean(en_01)
+en_05 <- en_pvalue_curves[en_pvalue_curves[,7] < 0.05, 7]
+mean(en_05)
+
+
+# test_sig_03 <- en_pvalue_curves[en_pvalue_curves[,1] < 0.05,1]
+# mean(test_sig_03)
+# test_sig_02 <- en_pvalue_curves[en_pvalue_curves[,3] < 0.05,3]
+# mean(test_sig_02)
+# test_sig_01 <- en_pvalue_curves[en_pvalue_curves[,5] < 0.05,5]
+# mean(test_sig_01)
+# test_sig_05 <- en_pvalue_curves[en_pvalue_curves[,7] < 0.05,7]
+# mean(test_sig_05)
+
+en_nonsig_03 <- en_pvalue_curves[en_pvalue_curves[,1] >= 0.05,1]
+mean(en_nonsig_03)
+en_nonsig_02 <- en_pvalue_curves[en_pvalue_curves[,3] >= 0.05,3]
+mean(en_nonsig_02)
+en_nonsig_01 <- en_pvalue_curves[en_pvalue_curves[,5] >= 0.05,5]
+mean(en_nonsig_01)
+en_nonsig_05 <- en_pvalue_curves[en_pvalue_curves[,7] >= 0.05,7]
+mean(en_nonsig_05)
+```
+
+Number of genes
+
+```{r}
+n_sig_03 <- en_n_selected[which(en_pvalue_curves[,1] < 0.05),1]
+mean(n_sig_03)
+n_sig_02 <- en_n_selected[which(en_pvalue_curves[,3] < 0.05),3]
+mean(n_sig_02)
+n_sig_01 <- en_n_selected[which(en_pvalue_curves[,5] < 0.05),5]
+mean(n_sig_01)
+n_sig_05 <- en_n_selected[which(en_pvalue_curves[,7] < 0.05),7]
+mean(n_sig_05)
+
+n_nonsig_03 <- en_n_selected[which(en_pvalue_curves[,1] >= 0.05),1]
+mean(n_nonsig_03)
+n_nonsig_02 <- en_n_selected[which(en_pvalue_curves[,3] >= 0.05),3]
+mean(n_nonsig_02)
+n_nonsig_01 <- en_n_selected[which(en_pvalue_curves[,5] >= 0.05),5]
+mean(n_nonsig_01)
+n_nonsig_05 <- en_n_selected[which(en_pvalue_curves[,7] >= 0.05),7]
+mean(n_nonsig_05)
+```
+
+Names of genes selected
+
+- Sig
+
+```{r}
+# variables always selected
+var_selected_alw_select_en_03 <- genes_en3[which(en_pvalue_curves[,1] < 0.05)]
+var_selected_alw_select_en1_03 <-  Reduce(intersect,var_selected_alw_select_en_03)
+print(paste("variables always selected by EN a=0.3 = ",length(var_selected_alw_select_en1_03)))
+var_selected_alw_select_en1_03
+
+
+# variables selected in 50 bootstrap samples
+l = length(var_selected_alw_select_en_03)
+var_selected_50_select_en_03 <- table(unlist(var_selected_alw_select_en_03))
+var_selected_50_select_en_03 <- as.data.frame(var_selected_50_select_en_03)
+var_selected_50_select_en_03 <- var_selected_50_select_en_03[order(var_selected_50_select_en_03$Freq, decreasing = TRUE),]
+write_xlsx(var_selected_50_select_en_03,"var_selected_EN03.xlsx")
+var_selected_50_select_en_03 <-  subset(var_selected_50_select_en_03, Freq > 0.50*l)
+print(paste("variables selected 50% by EN = ",length(var_selected_50_select_en_03$Var1)))
+var_selected_50_select_en_03$Var1
+```
+
+
+```{r}
+# variables always selected
+var_selected_alw_select_en_02 <- genes_en2[which(en_pvalue_curves[,3] < 0.05)]
+var_selected_alw_select_en1_02 <-  Reduce(intersect,var_selected_alw_select_en_02)
+print(paste("variables always selected by EN a=0.2 = ",length(var_selected_alw_select_en1_02)))
+var_selected_alw_select_en1_02
+
+
+# variables selected in 50 bootstrap samples
+l = length(var_selected_alw_select_en_02)
+var_selected_50_select_en_02 <- table(unlist(var_selected_alw_select_en_02))
+var_selected_50_select_en_02 <- as.data.frame(var_selected_50_select_en_02)
+var_selected_50_select_en_02 <- var_selected_50_select_en_02[order(var_selected_50_select_en_02$Freq, decreasing = TRUE),]
+write_xlsx(var_selected_50_select_en_02,"var_selected_EN02.xlsx")
+var_selected_50_select_en_02 <-  subset(var_selected_50_select_en_02, Freq > 0.50*l)
+print(paste("variables selected 50% by EN = ",length(var_selected_50_select_en_02$Var1)))
+var_selected_50_select_en_02$Var1
+```
+
+```{r}
+# variables always selected
+var_selected_alw_select_en_01 <- genes_en1[which(en_pvalue_curves[,5] < 0.05)]
+var_selected_alw_select_en1_01 <-  Reduce(intersect,var_selected_alw_select_en_01)
+print(paste("variables always selected by EN a=0.1 = ",length(var_selected_alw_select_en1_01)))
+var_selected_alw_select_en1_01
+
+
+# variables selected in 50 bootstrap samples
+l = length(var_selected_alw_select_en_01)
+var_selected_50_select_en_01 <- table(unlist(var_selected_alw_select_en_01))
+var_selected_50_select_en_01 <- as.data.frame(var_selected_50_select_en_01)
+var_selected_50_select_en_01 <- var_selected_50_select_en_01[order(var_selected_50_select_en_01$Freq, decreasing = TRUE),]
+write_xlsx(var_selected_50_select_en_01,"var_selected_EN01.xlsx")
+var_selected_50_select_en_01 <-  subset(var_selected_50_select_en_01, Freq > 0.50*l)
+print(paste("variables selected 50% by EN = ",length(var_selected_50_select_en_01$Var1)))
+var_selected_50_select_en_01$Var1
+```
+
+
+```{r}
+# variables always selected
+var_selected_alw_select_en_05 <- genes_en05[which(en_pvalue_curves[,7] < 0.05)]
+var_selected_alw_select_en1_05 <-  Reduce(intersect,var_selected_alw_select_en_05)
+print(paste("variables always selected by EN a=0.05 = ",length(var_selected_alw_select_en1_05)))
+var_selected_alw_select_en1_05
+
+
+# variables selected in 50 bootstrap samples
+l = length(var_selected_alw_select_en_05)
+var_selected_50_select_en_05 <- table(unlist(var_selected_alw_select_en_05))
+var_selected_50_select_en_05 <- as.data.frame(var_selected_50_select_en_05)
+var_selected_50_select_en_05 <- var_selected_50_select_en_05[order(var_selected_50_select_en_05$Freq, decreasing = TRUE),]
+write_xlsx(var_selected_50_select_en_05,"var_selected_EN05.xlsx")
+var_selected_50_select_en_05 <-  subset(var_selected_50_select_en_05, Freq > 0.50*l)
+print(paste("variables selected 50% by EN = ",length(var_selected_50_select_en_05$Var1)))
+var_selected_50_select_en_05$Var1
+```
+
+
+
+### final plot
+```{r,warning=FALSE,message=FALSE}
+alpha_points<-c(0.3, 0.2,0.1,0.05)
+
+pvalues_en_values_train<-c(mean(en_pvalue_curves[,1]),mean(en_pvalue_curves[,3]),mean(en_pvalue_curves[,5]),mean(en_pvalue_curves[,7]))
+
+
+pvalues_en_values<-c(mean(en_pvalue_curves[,1]),mean(en_pvalue_curves[,3]),mean(en_pvalue_curves[,5]),mean(en_pvalue_curves[,7]))
+                    
+pvalues_en_method<-c(rep("pvalues EN",4))
+
+pvalues_en<-data.frame(alpha_points,pvalues_en_values,pvalues_en_method)
+p_pvalues_en<-ggplot(data = pvalues_en, aes(x = alpha_points, y = pvalues_en_values,color= pvalues_en_method)) + geom_line()+geom_point()+theme_minimal()
+p_pvalues_en+ ylim(0, max(pvalues_en_values))
+```
+
+
+
+
+
+
+
+## TCox
+
+100 runs
+
+```{r}
+times_boot <- 100
+
+TCox_pvalue_curves <- matrix(0,times_boot,8)
+colnames(TCox_pvalue_curves) <- c("TCox3","run","TCox2","run","TCox1","run","TCox05","run")
+genes_TCox3 <- vector("list")
+genes_TCox2 <- vector("list")
+genes_TCox1 <- vector("list")
+genes_TCox05 <- vector("list")
+
+TCox_n_selected <- matrix(0,times_boot,8)
+colnames(TCox_n_selected) <- c("n_TCox3","run","n_TCox2","run","n_TCox1","run","n_TCox05","run")
+
+run = 2000
+lp = 1
+i=1
+
+
+while (i < 101){
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+  
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  set.seed(123)
+  
+  ############
+  ## TCox 0.3 ##
+  
+  cv.fit_elastic_net3<- cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                                  family = 'cox',
+                                  foldid = my_foldid, 
+                                  penalty.factor = tumornormal_weights1,
+                                  alpha = 0.3,
+                                  nlambda = 100,
+                                  nfolds= params$nfolds)
+  
+  
+  
+  # Fit the final model on all data
+  
+  fit_elastic_net3<-glmnet(as.matrix(xdata),as.matrix(ydata), 
+                           family = 'cox', 
+                           alpha = 0.3,
+                           penalty.factor = tumornormal_weights1,
+                           lambda = cv.fit_elastic_net3$lambda.min)
+  
+  
+  
+  coefs.v_elastic3 <- coef(fit_elastic_net3, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  if (length(coefs.v_elastic3) > 0) {
+    
+    TCox_n_selected[i,1] <- length(coefs.v_elastic3)
+    TCox_n_selected[i,2] <- run
+    genes_TCox3[[i]] <- names(coefs.v_elastic3)
+    
+    
+    TCox03<-separate2GroupsCox(as.vector(coefs.v_elastic3), 
+                                     xdata[, names(coefs.v_elastic3)], 
+                                     ydata, 
+                                     plot.title = 'Tcox, alpha=0.3', legend.outside = FALSE)
+    TCox_pvalue_curves[i,1] <- TCox03$pvalue
+    TCox_pvalue_curves[i,2] <- run
+    
+    
+    run = run + 11
+    i = i + 1
+    lp =lp + 1
+    
+  }  else {
+    
+    run = run + 11
+    lp =lp + 1
+    
+  }
+  
+}
+
+run = 2000
+lp =1
+i=1
+
+
+while (i < 101){
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+  
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  set.seed(123)
+  
+  ############
+  ## TCox 0.2 ##
+  
+  cv.fit_elastic_net2<- cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                                  family = 'cox',foldid = my_foldid, penalty.factor = tumornormal_weights1,
+                                  alpha = 0.2,
+                                  nlambda = 100,
+                                  nfolds= params$nfolds)
+  
+  
+  
+  # Fit the final model on all data
+  
+  fit_elastic_net2<-glmnet(as.matrix(xdata),as.matrix(ydata), 
+                           family = 'cox', 
+                           alpha = 0.2,
+                           penalty.factor = tumornormal_weights1,
+                           lambda = cv.fit_elastic_net2$lambda.min)
+  
+  
+  
+  coefs.v_elastic2 <- coef(fit_elastic_net2, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  if (length(coefs.v_elastic2) > 0) {
+    
+    TCox_n_selected[i,3] <- length(coefs.v_elastic2)
+    TCox_n_selected[i,4] <- run
+    genes_TCox2[[i]] <- names(coefs.v_elastic2)
+    
+    
+    TCox02<-separate2GroupsCox(as.vector(coefs.v_elastic2), 
+                               xdata[, names(coefs.v_elastic2)], 
+                               ydata, 
+                               plot.title = 'Tcox, alpha=0.2', legend.outside = FALSE)
+    TCox_pvalue_curves[i,3] <- TCox02$pvalue
+    TCox_pvalue_curves[i,4] <- run
+    
+    
+    run = run + 11
+    i = i + 1
+    lp =lp + 1
+    
+  }  else {
+    
+    run = run + 11
+    lp =lp + 1
+    
+  }
+  
+}
+
+run = 2000
+lp =1
+i=1
+
+while (i < 101){
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+  
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  set.seed(123)
+  
+  ############
+  ## TCox 0.1 ##
+  
+  cv.fit_elastic_net1<- cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                                  family = 'cox',
+                                  foldid = my_foldid, 
+                                  penalty.factor = tumornormal_weights1,
+                                  alpha = 0.1,
+                                  nlambda = 100,
+                                  nfolds= params$nfolds)
+  
+  
+  
+  # Fit the final model on all data
+  
+  fit_elastic_net1<-glmnet(as.matrix(xdata),as.matrix(ydata), 
+                           family = 'cox', 
+                           alpha = 0.1,
+                           penalty.factor = tumornormal_weights1,
+                           lambda = cv.fit_elastic_net1$lambda.min)
+  
+  
+  
+  coefs.v_elastic1 <- coef(fit_elastic_net1, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  if (length(coefs.v_elastic1) > 0) {
+    
+    TCox_n_selected[i,5] <- length(coefs.v_elastic1)
+    TCox_n_selected[i,6] <- run
+    genes_TCox1[[i]] <- names(coefs.v_elastic1)
+    
+    
+    TCox01<-separate2GroupsCox(as.vector(coefs.v_elastic1), 
+                               xdata[, names(coefs.v_elastic1)], 
+                               ydata, 
+                               plot.title = 'Tcox, alpha=0.1', legend.outside = FALSE)
+    TCox_pvalue_curves[i,5] <- TCox01$pvalue
+    TCox_pvalue_curves[i,6] <- run
+    
+    
+    run = run + 11
+    i = i + 1
+    lp =lp + 1
+    
+  }  else {
+    
+    run = run + 11
+    lp =lp + 1
+    
+  }
+  
+}
+
+run = 2000
+lp =1
+i=1
+
+
+while (i < 101){
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+  
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  set.seed(123)
+  
+  ############
+  ## TCox 0.05 ##
+  
+  cv.fit_elastic_net05<- cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                                  family = 'cox',foldid = my_foldid, penalty.factor = tumornormal_weights1,
+                                  alpha = 0.05,
+                                  nlambda = 100,
+                                  nfolds= params$nfolds)
+  
+  
+  
+  # Fit the final model on all data
+  
+  fit_elastic_net05<-glmnet(as.matrix(xdata),as.matrix(ydata), 
+                           family = 'cox', 
+                           alpha = 0.05,
+                           penalty.factor = tumornormal_weights1,
+                           lambda = cv.fit_elastic_net05$lambda.min)
+  
+  
+  
+  coefs.v_elastic05 <- coef(fit_elastic_net05, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  if (length(coefs.v_elastic05) > 0) {
+    
+    TCox_n_selected[i,7] <- length(coefs.v_elastic05)
+    TCox_n_selected[i,8] <- run
+    genes_TCox05[[i]] <- names(coefs.v_elastic05)
+    
+    
+    TCox05<-separate2GroupsCox(as.vector(coefs.v_elastic05), 
+                               xdata[, names(coefs.v_elastic05)], 
+                               ydata, 
+                               plot.title = 'Tcox, alpha=0.05', legend.outside = FALSE)
+    TCox_pvalue_curves[i,7] <- TCox05$pvalue
+    TCox_pvalue_curves[i,8] <- run
+    
+    
+    run = run + 11
+    i = i + 1
+    lp =lp + 1
+    
+  }  else {
+    
+    run = run + 11
+    lp =lp + 1
+    
+  }
+  
+}
+
+
+```
+
+
+### Analysis
+
+runs & pvalues
+
+```{r}
+tcox_03 <- TCox_pvalue_curves[TCox_pvalue_curves[,1] < 0.05, 1]
+mean(tcox_03)
+tcox_02 <- TCox_pvalue_curves[TCox_pvalue_curves[,3] < 0.05, 3]
+mean(tcox_02)
+tcox_01 <- TCox_pvalue_curves[TCox_pvalue_curves[,5] < 0.05, 5]
+mean(tcox_01)
+tcox_05 <- TCox_pvalue_curves[TCox_pvalue_curves[,7] < 0.05, 7]
+mean(tcox_05)
+
+# test_sig_03 <- TCox_pvalue_curves[TCox_pvalue_curves[,1] < 0.05,1]
+# mean(test_sig_03)
+# test_sig_02 <- TCox_pvalue_curves[TCox_pvalue_curves[,3] < 0.05,3]
+# mean(test_sig_02)
+# test_sig_01 <- TCox_pvalue_curves[TCox_pvalue_curves[,5] < 0.05,5]
+# mean(test_sig_01)
+# test_sig_05 <- TCox_pvalue_curves[TCox_pvalue_curves[,7] < 0.05,7]
+# mean(test_sig_05)
+
+tcox_nonsig_03 <- TCox_pvalue_curves[TCox_pvalue_curves[,1] >= 0.05,1]
+mean(tcox_nonsig_03)
+tcox_nonsig_02 <- TCox_pvalue_curves[TCox_pvalue_curves[,3] >= 0.05,3]
+mean(tcox_nonsig_02)
+tcox_nonsig_01 <- TCox_pvalue_curves[TCox_pvalue_curves[,5] >= 0.05,5]
+mean(tcox_nonsig_01)
+tcox_nonsig_05 <- TCox_pvalue_curves[TCox_pvalue_curves[,7] >= 0.05,7]
+mean(tcox_nonsig_05)
+```
+
+Number of genes
+
+```{r}
+n_sig_03 <- TCox_n_selected[which(TCox_pvalue_curves[,1] < 0.05),1]
+mean(n_sig_03)
+n_sig_02 <- TCox_n_selected[which(TCox_pvalue_curves[,3] < 0.05),3]
+mean(n_sig_02)
+n_sig_01 <- TCox_n_selected[which(TCox_pvalue_curves[,5] < 0.05),5]
+mean(n_sig_01)
+n_sig_05 <- TCox_n_selected[which(TCox_pvalue_curves[,7] < 0.05),7]
+mean(n_sig_05)
+
+n_nonsig_03 <- TCox_n_selected[which(TCox_pvalue_curves[,1] >= 0.05),1]
+mean(n_nonsig_03)
+n_nonsig_02 <- TCox_n_selected[which(TCox_pvalue_curves[,3] >= 0.05),3]
+mean(n_nonsig_02)
+n_nonsig_01 <- TCox_n_selected[which(TCox_pvalue_curves[,5] >= 0.05),5]
+mean(n_nonsig_01)
+n_nonsig_05 <- TCox_n_selected[which(TCox_pvalue_curves[,7] >= 0.05),7]
+mean(n_nonsig_05)
+```
+
+Names of genes selected
+
+- Sig
+
+```{r}
+# variables always selected
+var_selected_alw_select_TCox_03 <- genes_TCox3[which(TCox_pvalue_curves[,1] < 0.05)]
+var_selected_alw_select_TCox1_03 <-  Reduce(intersect,var_selected_alw_select_TCox_03)
+print(paste("variables always selected by TCox a=0.3 = ",length(var_selected_alw_select_TCox1_03)))
+var_selected_alw_select_TCox1_03
+
+
+# variables selected in 50 bootstrap samples
+l = length(var_selected_alw_select_TCox_03)
+var_selected_50_select_TCox_03 <- table(unlist(var_selected_alw_select_TCox_03))
+var_selected_50_select_TCox_03 <- as.data.frame(var_selected_50_select_TCox_03)
+var_selected_50_select_TCox_03 <- var_selected_50_select_TCox_03[order(var_selected_50_select_TCox_03$Freq, decreasing = TRUE),]
+write_xlsx(var_selected_50_select_TCox_03,"var_selected_TCox03.xlsx")
+var_selected_50_select_TCox_03 <-  subset(var_selected_50_select_TCox_03, Freq > 0.50*l)
+print(paste("variables selected 50% by TCox = ",length(var_selected_50_select_TCox_03$Var1)))
+var_selected_50_select_TCox_03$Var1
+```
+
+
+```{r}
+# variables always selected
+var_selected_alw_select_TCox_02 <- genes_TCox2[which(TCox_pvalue_curves[,3] < 0.05)]
+var_selected_alw_select_TCox1_02 <-  Reduce(intersect,var_selected_alw_select_TCox_02)
+print(paste("variables always selected by TCox a=0.2 = ",length(var_selected_alw_select_TCox1_02)))
+var_selected_alw_select_TCox1_02
+
+
+# variables selected in 50 bootstrap samples
+l = length(var_selected_alw_select_TCox_02)
+var_selected_50_select_TCox_02 <- table(unlist(var_selected_alw_select_TCox_02))
+var_selected_50_select_TCox_02 <- as.data.frame(var_selected_50_select_TCox_02)
+var_selected_50_select_TCox_02 <- var_selected_50_select_TCox_02[order(var_selected_50_select_TCox_02$Freq, decreasing = TRUE),]
+write_xlsx(var_selected_50_select_TCox_02,"var_selected_TCox02.xlsx")
+var_selected_50_select_TCox_02 <-  subset(var_selected_50_select_TCox_02, Freq > 0.50*l)
+print(paste("variables selected 50% by TCox = ",length(var_selected_50_select_TCox_02$Var1)))
+var_selected_50_select_TCox_02$Var1
+```
+
+```{r}
+# variables always selected
+var_selected_alw_select_TCox_01 <- genes_TCox1[which(TCox_pvalue_curves[,5] < 0.05)]
+var_selected_alw_select_TCox1_01 <-  Reduce(intersect,var_selected_alw_select_TCox_01)
+print(paste("variables always selected by TCox a=0.1 = ",length(var_selected_alw_select_TCox1_01)))
+var_selected_alw_select_TCox1_01
+
+
+# variables selected in 50 bootstrap samples
+l = length(var_selected_alw_select_TCox_01)
+var_selected_50_select_TCox_01 <- table(unlist(var_selected_alw_select_TCox_01))
+var_selected_50_select_TCox_01 <- as.data.frame(var_selected_50_select_TCox_01)
+var_selected_50_select_TCox_01 <- var_selected_50_select_TCox_01[order(var_selected_50_select_TCox_01$Freq, decreasing = TRUE),]
+write_xlsx(var_selected_50_select_TCox_01,"var_selected_TCox01.xlsx")
+var_selected_50_select_TCox_01 <-  subset(var_selected_50_select_TCox_01, Freq > 0.50*l)
+print(paste("variables selected 50% by TCox = ",length(var_selected_50_select_TCox_01$Var1)))
+var_selected_50_select_TCox_01$Var1
+```
+
+```{r}
+# variables always selected
+var_selected_alw_select_TCox_05 <- genes_TCox05[which(TCox_pvalue_curves[,7] < 0.05)]
+var_selected_alw_select_TCox1_05 <-  Reduce(intersect,var_selected_alw_select_TCox_05)
+print(paste("variables always selected by TCox a=0.05 = ",length(var_selected_alw_select_TCox1_05)))
+var_selected_alw_select_TCox1_05
+
+
+# variables selected in 50 bootstrap samples
+l = length(var_selected_alw_select_TCox_05)
+var_selected_50_select_TCox_05 <- table(unlist(var_selected_alw_select_TCox_05))
+var_selected_50_select_TCox_05 <- as.data.frame(var_selected_50_select_TCox_05)
+var_selected_50_select_TCox_05 <- var_selected_50_select_TCox_05[order(var_selected_50_select_TCox_05$Freq, decreasing = TRUE),]
+write_xlsx(var_selected_50_select_TCox_05,"var_selected_TCox05.xlsx")
+var_selected_50_select_TCox_05 <-  subset(var_selected_50_select_TCox_05, Freq > 0.50*l)
+print(paste("variables selected 50% by TCox = ",length(var_selected_50_select_TCox_05$Var1)))
+var_selected_50_select_TCox_05$Var1
+```
+
+
+```{r}
+# #CHAT tool
+# names <- c( )
+# 
+# geneNames(names) %>% { hallmarks(.$external_gene_name)$heatmap} + theme(axis.text=element_text(size=10), axis.title=element_text(size=10))
+
+
+```
+
+### final plot
+```{r,warning=FALSE,message=FALSE}
+alpha_points<-c(0.3, 0.2,0.1,0.05)
+
+pvalues_TCox_values_train<-c(mean(TCox_pvalue_curves[,1]),mean(TCox_pvalue_curves[,3]),mean(TCox_pvalue_curves[,5]),mean(TCox_pvalue_curves[,7]))
+
+pvalues_TCox_values<-c(mean(TCox_pvalue_curves[,1]),mean(TCox_pvalue_curves[,3]),mean(TCox_pvalue_curves[,5]),mean(TCox_pvalue_curves[,7]))
+
+pvalues_TCox_method<-c(rep("pvalues TCox ",4))
+
+pvalues_TCox<-data.frame(alpha_points,pvalues_TCox_values,pvalues_TCox_method)
+p_pvalues_TCox<-ggplot(data = pvalues_TCox, aes(x = alpha_points, y = pvalues_TCox_values,color= pvalues_TCox_method)) + geom_line()+geom_point()+theme_minimal()
+p_pvalues_TCox+ ylim(0, max(pvalues_TCox_values))
+```
+
+
+
+
+
+
+
+
+
+
+# Gene function ontology
+
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+
+## 1. DEGs tumor vs. normal 
+```{r}
+geneList2 <- genes_deg[order(genes_deg$logFC,decreasing = T),] 
+geneList <- geneList2$logFC
+names(geneList) <- geneList2$row
+gene <- names(geneList)
+#gene <- names(geneList)[abs(geneList) > 2]
+
+# Entrez gene ID
+head(gene)
+```
+
+
+### GO Gene Set Enrichment Analysis
+
+```{r}
+gs1_ego_cc <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "CC",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs1_ego_cc)
+
+# #remove redundant terms
+# gs1_ego_cc_sim <-  simplify(gs1_ego_cc, cutoff=0.7, by="p.adjust",
+# select_fun=min)
+# bp2 <- simplify(bp, cutoff=0.7, by="p.adjust", select_fun=min)
+
+# activated vs.supressed paths
+dotplot(gs1_ego_cc, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs1_ego_cc,showCategory=10) + labs(x = "enrichment distribution")
+
+
+
+cnetplot(gs1_ego_cc, foldChange=geneList,showCategory=3)
+cnetplot(gs1_ego_cc, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+
+
+#dotplot(gs1_ego_cc,showCategory=30) + ggtitle("dotplot for CC GSEA analysis of DEGs tumor vs. normal ")
+```
+
+
+```{r}
+gs1_ego_mf <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "MF",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs1_ego_mf)
+
+dotplot(gs1_ego_mf, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs1_ego_mf,showCategory=10) + labs(x = "enrichment distribution")
+
+
+
+cnetplot(gs1_ego_mf, foldChange=geneList,showCategory=3)
+
+
+
+# cnetplot(gs1_ego_mf, foldChange=geneList)
+# cnetplot(gs1_ego_mf, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# 
+# 
+# dotplot(gs1_ego_mf,showCategory=30) + ggtitle("dotplot for MF GSEA analysis of DEGs tumor vs. normal ")
+```
+
+
+
+```{r}
+gs1_ego_bp <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs1_ego_bp)
+
+
+dotplot(gs1_ego_bp, split=".sign",showCategory=5) + facet_grid(~.sign)
+ridgeplot(gs1_ego_bp,showCategory=10) + labs(x = "enrichment distribution")
+
+
+
+cnetplot(gs1_ego_bp, foldChange=geneList,showCategory=3)
+
+
+
+# 
+# cnetplot(gs1_ego_bp, foldChange=geneList)
+# cnetplot(gs1_ego_bp, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# dotplot(gs1_ego_bp,showCategory=30) + ggtitle("dotplot for BP GSEA analysis of DEGs tumor vs. normal ")
+```
+
+
+
+
+
+
+
+
+## 2. DEGs early vs. advanced
+```{r}
+geneList2 <- genes_deg_ea[order(genes_deg_ea$logFC,decreasing = T),] # early vs.advanced DEGs 
+geneList <- geneList2$logFC
+names(geneList) <- geneList2$row
+gene <- names(geneList)[abs(geneList) > 2]
+
+# Entrez gene ID
+head(gene)
+```
+
+### GO Gene Set Enrichment Analysis
+
+```{r}
+gs2_ego_cc <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "CC",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs2_ego_cc)
+
+
+dotplot(gs2_ego_cc, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs2_ego_cc,showCategory=10) + labs(x = "enrichment distribution")
+
+
+
+cnetplot(gs2_ego_cc, foldChange=geneList,showCategory=3)
+
+# cnetplot(gs2_ego_cc, foldChange=geneList)
+# cnetplot(gs2_ego_cc, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# 
+# 
+# dotplot(gs2_ego_cc,showCategory=30) + ggtitle("dotplot for CC GSEA analysis of DEGs early vs. advanced ")
+```
+
+
+```{r}
+gs2_ego_mf <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "MF",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs2_ego_mf)
+
+dotplot(gs2_ego_mf, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs2_ego_mf,showCategory=10) + labs(x = "enrichment distribution")
+
+
+
+cnetplot(gs2_ego_mf, foldChange=geneList,showCategory=3)
+
+# cnetplot(gs2_ego_mf, foldChange=geneList)
+# cnetplot(gs2_ego_mf, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# 
+# 
+# dotplot(gs2_ego_mf,showCategory=30) + ggtitle("dotplot for MF GSEA analysis of DEGs early vs. advanced ")
+```
+
+
+
+```{r}
+gs2_ego_bp <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs2_ego_bp)
+
+dotplot(gs2_ego_bp, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs2_ego_bp,showCategory=10) + labs(x = "enrichment distribution")
+
+
+cnetplot(gs2_ego_bp, foldChange=geneList,showCategory=3)
+
+# cnetplot(gs2_ego_bp, foldChange=geneList)
+# cnetplot(gs2_ego_bp, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# dotplot(gs2_ego_bp,showCategory=30) + ggtitle("dotplot for BP GSEA analysis of DEGs early vs. advanced ")
+```
+
+
+
+
+
+
+
+
+## 3. EN
+
+- use beta coefficients
+
+```{r}
+set.seed(2550)
+
+# Train and test sets
+ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+xtraining <- xdata[ixs$train,]
+xtesting <- xdata[ixs$test,]
+
+ytraining <- ydata[ixs$train,]
+ytesting <- ydata[ixs$test,]
+
+#Foldid
+my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+
+#EN
+# Find the best lambda using cross-validation
+cv <- cv.glmnet(as.matrix(xtraining), as.matrix(ytraining), alpha = 0, family="cox")
+plot(cv)
+
+# Display the best lambda value
+cv$lambda.min
+
+# Fit the final model on the training data
+model <- glmnet(xdata, Surv(ydata$time, ydata$status), alpha = 0, lambda = cv$lambda.min,family = "cox")
+# Display regression coefficients
+coef_en3 <- coef(model, s = 'lambda.min')[,1] %>% { .[. != 0]}
+length(coef_en3)
+#names(coef_en3)
+  
+coefs_order_en <- sort(coef_en3, decreasing = T)
+  
+```
+
+```{r}
+gene <- names(coefs_order_en)
+# Entrez gene ID
+head(gene)
+
+geneList <- coefs_order_en
+```
+
+
+
+
+### GO Gene Set Enrichment Analysis
+
+```{r}
+gs3_ego_cc <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "CC",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs3_ego_cc)
+
+dotplot(gs3_ego_cc, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs3_ego_cc,showCategory=10) + labs(x = "enrichment distribution")
+
+
+cnetplot(gs3_ego_cc, foldChange=geneList,showCategory=3)
+
+# cnetplot(gs3_ego_cc, foldChange=geneList)
+# cnetplot(gs3_ego_cc, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# 
+# 
+# dotplot(gs3_ego_cc,showCategory=30) + ggtitle("dotplot for CC GSEA analysis of genes selected by EN ")
+
+```
+
+
+```{r}
+gs3_ego_mf <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "MF",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs3_ego_mf)
+
+dotplot(gs3_ego_mf, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs3_ego_mf,showCategory=10) + labs(x = "enrichment distribution")
+
+
+cnetplot(gs3_ego_mf, foldChange=geneList,showCategory=3)
+
+# cnetplot(gs3_ego_mf, foldChange=geneList)
+# cnetplot(gs3_ego_mf, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# 
+# 
+# dotplot(gs3_ego_mf,showCategory=30) + ggtitle("dotplot for MF GSEA analysis of genes selected by EN  ")
+```
+
+
+
+```{r}
+gs3_ego_bp <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs3_ego_bp)
+
+dotplot(gs3_ego_bp, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs3_ego_bp,showCategory=10) + labs(x = "enrichment distribution")
+
+
+cnetplot(gs3_ego_bp, foldChange=geneList,showCategory=3)
+
+# cnetplot(gs3_ego_bp, foldChange=geneList)
+# cnetplot(gs3_ego_bp, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# dotplot(gs3_ego_bp,showCategory=30) + ggtitle("dotplot for BP GSEA analysis of genes selected by EN  ")
+```
+
+
+
+
+## 4. TCox
+
+- use beta coefficients
+
+```{r}
+set.seed(2550)
+
+# Train and test sets
+ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+xtraining <- xdata[ixs$train,]
+xtesting <- xdata[ixs$test,]
+
+ytraining <- ydata[ixs$train,]
+ytesting <- ydata[ixs$test,]
+
+#Foldid
+my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+
+  
+#TCox
+# Find the best lambda using cross-validation
+cv_tcox <- cv.glmnet(as.matrix(xtraining), as.matrix(ytraining), alpha = 0, family="cox", penalty.factor = tumornormal_weights1)
+plot(cv_tcox)
+
+# Display the best lambda value
+cv_tcox$lambda.min
+
+# Fit the final model on the training data
+model <- glmnet(xdata, Surv(ydata$time, ydata$status), alpha = 0, lambda = cv$lambda.min,family = "cox", penalty.factor = tumornormal_weights1)
+# Display regression coefficients
+coef_tcox <- coef(model, s = 'lambda.min')[,1] %>% { .[. != 0]}
+length(coef_tcox)
+#names(coef_tcox)
+  
+coefs_order_tcox <- sort(coef_tcox, decreasing = T)
+```
+
+```{r}
+gene <- names(coefs_order_tcox)
+# Entrez gene ID
+head(gene)
+
+geneList <- coefs_order_tcox
+```
+
+### GO Gene Set Enrichment Analysis
+
+```{r}
+gs4_ego_cc <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "CC",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs4_ego_cc)
+
+dotplot(gs4_ego_cc, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs4_ego_cc,showCategory=10) + labs(x = "enrichment distribution")
+
+
+cnetplot(gs4_ego_cc, foldChange=geneList,showCategory=3)
+
+# cnetplot(gs4_ego_cc, foldChange=geneList)
+# cnetplot(gs4_ego_cc, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# 
+# 
+# dotplot(gs4_ego_cc,showCategory=30) + ggtitle("dotplot for CC GSEA analysis of genes selected by TCox ")
+```
+
+
+```{r}
+gs4_ego_mf <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "MF",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+head(gs4_ego_mf)
+
+dotplot(gs4_ego_mf, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs4_ego_mf,showCategory=10) + labs(x = "enrichment distribution")
+
+
+cnetplot(gs4_ego_mf, foldChange=geneList,showCategory=3)
+
+# cnetplot(gs4_ego_mf, foldChange=geneList)
+# cnetplot(gs4_ego_mf, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# 
+# 
+# dotplot(gs4_ego_mf,showCategory=30) + ggtitle("dotplot for MF GSEA analysis of DEGs tumor vs. normal ")
+```
+
+
+```{r}
+gs4_ego_bp <- gseGO(geneList     = geneList,
+              OrgDb        = org.Hs.eg.db,
+              ont          = "BP",
+              keyType = "SYMBOL",
+              minGSSize    = 100,
+              maxGSSize    = 500,
+              pvalueCutoff = 0.05,
+              verbose      = FALSE)
+
+#head(gs4_ego_bp)
+
+dotplot(gs4_ego_bp, showCategory=5, split=".sign") + facet_grid(.~.sign)
+ridgeplot(gs4_ego_bp,showCategory=10) + labs(x = "enrichment distribution")
+
+
+cnetplot(gs4_ego_bp, foldChange=geneList,showCategory=3)
+
+# #view(gs4_ego_bp@result)
+# cnetplot(gs4_ego_bp, foldChange=geneList)
+# cnetplot(gs4_ego_bp, foldChange=geneList, circular = TRUE, colorEdge = TRUE) 
+# dotplot(gs4_ego_bp,showCategory=30) + ggtitle("dotplot for BP GSEA analysis of genes selected by TCox ")
+```
+
+
+
+
+
+
+# last model 1
+
+
+```{r}
+data <- xt_less[,c("COPS7B", "DONSON","SEC61A2","SNRPA1", "SORBS2","GTF2E2", "HAUS8", "PRH2", "ZNF18",  "FBXO5","SMC4", "PRC1", "SLC34A1", "SLC12A3", "KIFC1", "KIF18A", "KIF23", "TPX2", "GTSE1", "SLC14A2", "AQP2", "TTK", "NEK2", "NUF2")]
+
+xdata.raw <- as.data.frame(data) #529 24
+
+
+ydata.raw <- as.data.frame(datasurv)
+ydata <- ydata.raw[rownames(ydata.raw) %in% 
+                     rownames(xdata.raw),]
+
+
+xdata.raw <- xdata.raw[rownames(xdata.raw) %in% 
+                         rownames(ydata),]
+xdata <- xdata.raw %>% 
+  { (apply(., 2, sd) != 0) } %>% 
+  { xdata.raw[, .] } %>% 
+  scale
+
+xdata <- xdata[rownames(ydata),]
+
+xdata <- as.matrix(xdata) #527 19819
+
+```
+
+```{r}
+times_boot <- 100
+
+new_pvalue_curves <- matrix(0,times_boot,2)
+colnames(new_pvalue_curves) <- c("new model","run")
+
+new_beta_selected <- matrix(0,times_boot,24)
+colnames(new_beta_selected) <- c("COPS7B", "DONSON","SEC61A2","SNRPA1", "SORBS2","GTF2E2", "HAUS8", "PRH2", "ZNF18",  "FBXO5","SMC4", "PRC1", "SLC34A1", "SLC12A3", "KIFC1", "KIF18A", "KIF23", "TPX2", "GTSE1", "SLC14A2", "AQP2", "TTK", "NEK2", "NUF2")
+
+run = 2000
+lp = 1
+i=1
+
+
+while (i < 101){
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+  
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  set.seed(123)
+  
+  ############
+  ## newmodel ridge ##
+  
+  cv.fit <- cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                      family = 'cox',
+                      foldid = my_foldid, 
+                      #penalty.factor = tumornormal_weights1,
+                      alpha = 0,
+                      nlambda = 100,
+                      nfolds= params$nfolds)
+  
+  
+  
+  # Fit the final model on all data
+  
+  fit <- glmnet(as.matrix(xdata),as.matrix(ydata), 
+                family = 'cox', 
+                alpha = 0,
+                #penalty.factor = tumornormal_weights1,
+                lambda = cv.fit$lambda.min)
+  
+  
+  
+  coefs.v <- coef(fit, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  new_beta_selected[i,] <- coefs.v
+    
+    
+  newmodel <- separate2GroupsCox(as.vector(coefs.v), 
+                                   xdata[, names(coefs.v)], 
+                                   ydata, 
+                                   plot.title = 'new gene set', legend.outside = FALSE)
+  new_pvalue_curves[i,1] <- newmodel$pvalue
+  new_pvalue_curves[i,2] <- run
+    
+    
+  run = run + 11
+  i = i + 1
+  lp =lp + 1
+    
+  }
+  
+
+
+
+
+
+```
+
+```{r}
+newmodel
+```
+
+
+runs & pvalues
+
+```{r}
+pval_finalmodel <- new_pvalue_curves[new_pvalue_curves[,1] < 0.05, 1]
+mean(pval_finalmodel)
+
+```
+Betas
+
+```{r}
+View(new_beta_selected)
+
+new_model_means <- matrix(0,1,24)
+colnames(new_model_means) <- colnames(new_beta_selected)
+
+for (i in 1:ncol(new_beta_selected)) {
+  new_model_means[,i] <- mean(new_beta_selected[,i])
+}
+
+new_model_means <- t(new_model_means)
+new_model_means <- new_model_means[order(new_model_means[,1], decreasing = TRUE),]
+```
+
+
+
+
+
+
+# last model 2
+
+
+```{r}
+data <- xt_less[,c("DONSON","SEC61A2","SNRPA1", "SORBS2")]
+
+xdata.raw <- as.data.frame(data) #529 4
+
+
+ydata.raw <- as.data.frame(datasurv)
+ydata <- ydata.raw[rownames(ydata.raw) %in% 
+                     rownames(xdata.raw),]
+
+
+xdata.raw <- xdata.raw[rownames(xdata.raw) %in% 
+                         rownames(ydata),]
+xdata <- xdata.raw %>% 
+  { (apply(., 2, sd) != 0) } %>% 
+  { xdata.raw[, .] } %>% 
+  scale
+
+xdata <- xdata[rownames(ydata),]
+
+xdata <- as.matrix(xdata) #527 4
+
+```
+
+```{r}
+times_boot <- 100
+
+new_pvalue_curves2 <- matrix(0,times_boot,2)
+colnames(new_pvalue_curves2) <- c("new model","run")
+
+new_beta_selected2 <- matrix(0,times_boot,4)
+colnames(new_beta_selected2) <- c("DONSON","SEC61A2","SNRPA1", "SORBS2")
+
+run = 2000
+lp = 1
+i=1
+
+
+while (i < 101){
+  print(lp)
+  print(i)
+  set.seed(run)
+  print(run)
+  
+  # Train and test sets
+  ixs <- loose.rock::balanced.train.and.test(which(as.logical(ydata$status)), which(as.logical(!ydata$status)), train.perc = 0.7)
+  xtraining <- xdata[ixs$train,]
+  xtesting <- xdata[ixs$test,]
+  
+  ytraining <- ydata[ixs$train,]
+  ytesting <- ydata[ixs$test,]
+  
+  #Foldid
+  my_foldid <- sample(1:10,size=dim(ytraining)[1],replace=TRUE)
+  
+  set.seed(123)
+  
+  ############
+  ## newmodel ridge ##
+  
+  cv.fit <- cv.glmnet(as.matrix(xtraining),as.matrix(ytraining), 
+                      family = 'cox',
+                      foldid = my_foldid, 
+                      #penalty.factor = tumornormal_weights1,
+                      alpha = 0,
+                      nlambda = 100,
+                      nfolds= params$nfolds)
+  
+  
+  
+  # Fit the final model on all data
+  
+  fit <- glmnet(as.matrix(xdata),as.matrix(ydata), 
+                family = 'cox', 
+                alpha = 0,
+                #penalty.factor = tumornormal_weights1,
+                lambda = cv.fit$lambda.min)
+  
+  
+  
+  coefs.v <- coef(fit, s = 'lambda.min')[,1] %>% { .[. != 0]}
+  
+  new_beta_selected2[i,] <- coefs.v
+    
+    
+  newmodel <- separate2GroupsCox(as.vector(coefs.v), 
+                                   xdata[, names(coefs.v)], 
+                                   ydata, 
+                                   plot.title = 'newmodel, alpha=0.3', legend.outside = FALSE)
+  new_pvalue_curves2[i,1] <- newmodel$pvalue
+  new_pvalue_curves2[i,2] <- run
+    
+    
+  run = run + 11
+  i = i + 1
+  lp =lp + 1
+    
+  }
+  
+
+
+
+
+
+```
+
+
+
+runs & pvalues
+
+```{r}
+pval_finalmodel2 <- new_pvalue_curves2[new_pvalue_curves2[,1] < 0.05, 1]
+mean(pval_finalmodel2)
+
+```
+Betas
+
+```{r}
+View(new_beta_selected2)
+
+new_model_means2 <- matrix(0,1,4)
+colnames(new_model_means2) <- colnames(new_beta_selected2)
+
+for (i in 1:ncol(new_beta_selected2)) {
+  new_model_means2[,i] <- mean(new_beta_selected2[,i])
+}
+
+new_model_means2 <- t(new_model_means2)
+new_model_means2 <- new_model_means2[order(new_model_means2[,1], decreasing = TRUE),]
+```
+
+
+
+
