@@ -1,6 +1,7 @@
 # Identification of biomarkers predictive of metastasis development in early-stage colorectal cancer using network-based regularization
 
-Carolina Peixoto,Marta B. Lopes,Marta Martins,Sandra Casimiro,Daniel Sobral,Ana Rita Grosso,Catarina Abreu,DanielaMacedo,Ana Lúcia Costa,Helena Pais,Cecília Alvim,André Mansinho,Pedro Filipe,Pedro Marques da Costa,AfonsoFernandes,Paula Borralho,Cristina Ferreira,João Malaquias,António Quintela,Shannon Kaplan,Mahdi Golkaram,MichaelSalmans,Nafeesa Khan,Raakhee Vijayaraghavan,Shile Zhang,Traci Pawlowski,Jim Godsey,Alex So,Li Liu,Luís Costa,SusanaVinga
+<i> Carolina Peixoto, Marta B. Lopes, Marta Martins, Sandra Casimiro, Daniel Sobral, Ana Rita Grosso, Catarina Abreu, DanielaMacedo, Ana Lúcia Costa, Helena Pais, Cecília Alvim, André Mansinho, Pedro Filipe, Pedro Marques da Costa, Afonso Fernandes, Paula Borralho, Cristina Ferreira, João Malaquias, António Quintela, Shannon Kaplan, Mahdi Golkaram, Michael Salmans, Nafeesa Khan, Raakhee Vijayaraghavan, Shile Zhang, Traci Pawlowski, Jim Godsey, Alex So, Li Liu, Luís Costa, Susana Vinga </i>
+
 Submitted to BMC Bioinformatics (15 March 2022). Under Review.
 
 ## Highlights 
