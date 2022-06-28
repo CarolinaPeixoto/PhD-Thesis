@@ -12,7 +12,7 @@ Submitted to BMC Bioinformatics (15 March 2022). Under Review.
 
 -iTwiner, based on correlation matrices, lead to the best model performance selecting the most stable and robust gene sets
 
--Classifiers based on the genes pre-selected by regularized logistic regression shown better performance thanthose that use DEGs
+-Classifiers based on the genes pre-selected by regularized logistic regression shown better performance thant hose that use DEGs
 
 ## Data
 Two cohorts of CRC patients from Hospital Santa Maria (Lisbon, Portugal): 
