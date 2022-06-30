@@ -21,4 +21,5 @@ Overall, this work allowed to better understand cancer genomics and find key bio
 
 ## Outline
 
-![outile](https://user-images.githubusercontent.com/45852638/176178206-86f520ff-679c-4fa4-aa01-498befd82829.png)
+![image](https://user-images.githubusercontent.com/45852638/176669549-aa018bc8-f031-448c-b164-ffcd2425d7d3.png)
+
